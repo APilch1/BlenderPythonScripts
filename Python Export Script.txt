@@ -1,0 +1,214 @@
+# Blender Add-on: Wasteland Wanderers World Exporter (v1.2 - Batch Mode)
+#
+# How to Use:
+# 1. Open Blender and go to the "Scripting" workspace.
+# 2. Create a new text block and paste this script in.
+# 3. Click "Run Script".
+# 4. In the 3D Viewport, press 'N' to open the sidebar.
+# 5. Use the "WW Exporter" tab to export your chunks.
+#
+import bpy
+import os
+
+bl_info = {
+    "name": "Wasteland Wanderers Exporter",
+    "author": "Game Engine AI",
+    "version": (1, 2),
+    "blender": (2, 80, 0),
+    "location": "View3D > Sidebar > WW Exporter",
+    "description": "Exports world chunks for the Wasteland Wanderers game.",
+    "category": "Export",
+}
+
+# --- Helper Functions ---
+
+def get_export_path():
+    """Gets the directory of the current .blend file."""
+    blend_file_path = bpy.data.filepath
+    if not blend_file_path:
+        return None
+    return os.path.dirname(blend_file_path)
+
+def deselect_all():
+    """Deselects all objects in the scene."""
+    bpy.ops.object.select_all(action='DESELECT')
+
+def show_message_box(message="", title="Message", icon='INFO'):
+    """Displays a popup message box to the user."""
+    def draw(self, context):
+        self.layout.label(text=message)
+    bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
+
+# --- Main Export Operators ---
+
+class WW_OT_ExportAllTerrains(bpy.types.Operator):
+    """Exports all meshes in the 'Terrain' collection, using their names for chunk coordinates."""
+    bl_idname = "ww.export_all_terrains"
+    bl_label = "Export All Terrains"
+
+    def execute(self, context):
+        export_path = get_export_path()
+        if not export_path:
+            self.report({'ERROR'}, "Please save your .blend file first.")
+            return {'CANCELLED'}
+
+        terrain_collection = bpy.data.collections.get("Terrain")
+        if not terrain_collection or not terrain_collection.objects:
+            self.report({'ERROR'}, "No 'Terrain' collection or no objects in it.")
+            return {'CANCELLED'}
+
+        exported_count = 0
+        original_cursor_location = context.scene.cursor.location.copy()
+
+        for terrain_obj in terrain_collection.objects:
+            if not terrain_obj.name.startswith("chunk_"):
+                print(f"Skipping '{terrain_obj.name}' as it doesn't follow the 'chunk_x_z_terrain' naming convention.")
+                continue
+
+            original_location = terrain_obj.location.copy()
+            
+            try:
+                deselect_all()
+                terrain_obj.select_set(True)
+                context.view_layer.objects.active = terrain_obj
+
+                # Temporarily move object to world origin for clean export
+                context.scene.cursor.location = (0, 0, 0)
+                bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
+                terrain_obj.location = (0, 0, 0)
+
+                # Export the file
+                filename = f"{terrain_obj.name}.glb"
+                filepath = os.path.join(export_path, filename)
+                
+                bpy.ops.export_scene.gltf(
+                    filepath=filepath,
+                    use_selection=True,
+                    export_format='GLB',
+                    export_apply=True,
+                    export_animations=False,
+                    export_cameras=False,
+                    export_lights=False,
+                    export_colors=True
+                )
+                exported_count += 1
+
+            except Exception as e:
+                self.report({'ERROR'}, f"Failed to export {terrain_obj.name}: {e}")
+            finally:
+                # IMPORTANT: Revert object to its original state in the Blender scene
+                terrain_obj.location = original_location
+                bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
+        
+        # Restore cursor location
+        context.scene.cursor.location = original_cursor_location
+        
+        show_message_box(f"Successfully exported {exported_count} terrain chunk(s).")
+        return {'FINISHED'}
+
+
+class WW_OT_ExportGameObjects(bpy.types.Operator):
+    """Exports the GameObject empties for the specified chunk."""
+    bl_idname = "ww.export_gameobjects"
+    bl_label = "Export GameObjects"
+
+    def execute(self, context):
+        # This operator remains unchanged for now, exporting GameObjects based on the
+        # active object or a different logic if needed in the future.
+        # For a full multi-chunk workflow, this would also need to be updated.
+        
+        export_path = get_export_path()
+        if not export_path:
+            self.report({'ERROR'}, "Please save your .blend file first.")
+            return {'CANCELLED'}
+
+        gameobjects_collection = bpy.data.collections.get("GameObjects")
+        if not gameobjects_collection or not gameobjects_collection.objects:
+            self.report({'ERROR'}, "No 'GameObjects' collection or no objects in it.")
+            return {'CANCELLED'}
+
+        # A simple approach: use the active object to determine chunk coordinates
+        active_obj = context.active_object
+        if not active_obj or not active_obj.name.startswith("chunk_"):
+             self.report({'ERROR'}, "Select a terrain chunk to associate GameObjects with.")
+             return {'CANCELLED'}
+        
+        # Extract chunk_x_z from the active terrain's name
+        chunk_name_parts = active_obj.name.split('_')
+        chunk_x = chunk_name_parts[1]
+        chunk_z = chunk_name_parts[2]
+
+        deselect_all()
+        for obj in gameobjects_collection.objects:
+            obj.select_set(True)
+
+        filename = f"chunk_{chunk_x}_{chunk_z}_data.glb"
+        filepath = os.path.join(export_path, filename)
+
+        try:
+            bpy.ops.export_scene.gltf(
+                filepath=filepath,
+                use_selection=True,
+                export_format='GLB',
+                export_animations=False,
+                export_cameras=False,
+                export_lights=False,
+                export_extras=True
+            )
+            show_message_box(f"Successfully exported: {filename}")
+        except Exception as e:
+            self.report({'ERROR'}, f"Export failed: {e}")
+            return {'CANCELLED'}
+
+        return {'FINISHED'}
+
+# --- UI Panel ---
+
+class WW_PT_ExporterPanel(bpy.types.Panel):
+    """Creates a Panel in the 3D View Sidebar."""
+    bl_label = "WW Exporter"
+    bl_idname = "OBJECT_PT_ww_exporter"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'WW Exporter'
+
+    def draw(self, context):
+        layout = self.layout
+        
+        layout.label(text="Batch Export:")
+        layout.operator(WW_OT_ExportAllTerrains.bl_idname)
+        
+        layout.separator()
+        
+        layout.label(text="Single Chunk Data Export:")
+        layout.operator(WW_OT_ExportGameObjects.bl_idname)
+        layout.label(text="(Select a terrain chunk first)")
+
+        layout.separator()
+        
+        export_path = get_export_path()
+        if export_path:
+            layout.label(text="Export Path:")
+            layout.box().label(text=export_path)
+        else:
+            layout.label(text="Save .blend file to set path.", icon='ERROR')
+
+
+# --- Registration ---
+
+classes = (
+    WW_OT_ExportAllTerrains,
+    WW_OT_ExportGameObjects,
+    WW_PT_ExporterPanel,
+)
+
+def register():
+    for cls in classes:
+        bpy.utils.register_class(cls)
+
+def unregister():
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+
+if __name__ == "__main__":
+    register()
